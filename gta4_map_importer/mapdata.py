@@ -69,6 +69,35 @@ def _q_rotate(q, v):
     return p[1], p[2], p[3]
 
 
+class LightDef:
+    """A light attached to a model (IDE 2dfx type 0). Position/direction are in model space."""
+    __slots__ = ("pos", "spot", "color", "range", "inner", "outer", "dir")
+
+    def __init__(self, pos, spot, color, range_, inner, outer, direction):
+        self.pos = pos
+        self.spot = spot          # False = point light, True = spotlight
+        self.color = color        # (r, g, b) 0-255
+        self.range = range_       # falloff distance in metres
+        self.inner = inner        # spotlight cone angles in degrees
+        self.outer = outer
+        self.dir = direction
+
+
+def placed_lights(gd, insts):
+    """World-space lights for placements: [(pos, dir, LightDef)]."""
+    out = []
+    for inst in insts:
+        defs = gd.lights.get(inst.hash)
+        if not defs:
+            continue
+        q = _q_true(inst.rot)
+        for L in defs:
+            off = _q_rotate(q, L.pos)
+            pos = (inst.pos[0] + off[0], inst.pos[1] + off[1], inst.pos[2] + off[2])
+            out.append((pos, _q_rotate(q, L.dir), L))
+    return out
+
+
 class MloDef:
     """An interior: objects placed relative to the interior's origin."""
     __slots__ = ("name", "entities")
@@ -113,6 +142,7 @@ class GameData:
 
         self.models = {}       # hash -> ModelDef
         self.mlos = {}         # hash -> MloDef (interiors)
+        self.lights = {}       # model hash -> [LightDef]
         self.txd_parent = {}   # txd -> parent txd
         self.archives = []     # (area, ImgArchive)
         self.index = {}        # entry name -> ImgArchive
@@ -172,7 +202,8 @@ class GameData:
         for p in self.ide_paths:
             if os.path.isfile(p):
                 self._parse_ide(p)
-        self.log("Loaded %d model definitions" % len(self.models))
+        self.log("Loaded %d model definitions, %d with lights"
+                 % (len(self.models), len(self.lights)))
 
     def _parse_ide(self, path):
         section = None
@@ -194,6 +225,17 @@ class GameData:
                 mlo, mlo_left, mlo_skip = None, 0, False
                 continue
             f = [x.strip() for x in line.split(",")]
+            if section == "2dfx":
+                if len(f) >= 38 and f[4] == "0":
+                    try:
+                        L = LightDef(tuple(float(v) for v in f[1:4]), f[9] == "2",
+                                     tuple(int(float(v)) for v in f[10:13]), float(f[31]),
+                                     float(f[25]), float(f[26]), tuple(float(v) for v in f[32:35]))
+                    except ValueError:
+                        continue
+                    if L.range > 0:
+                        self.lights.setdefault(joaat(f[0]), []).append(L)
+                continue
             if section == "mlo":
                 if mlo_skip:
                     continue
@@ -413,4 +455,60 @@ def split_interiors(selected):
         for row in rows:
             key = area + "_interiors" if row[0].interior else area
             out.setdefault(key, []).append(row)
+    return out
+
+
+def emissive_kind(shader):
+    """GTA IV glowing shaders -> (night_only, strength), or None.
+
+    gta_emissivenight (lamp bulbs, lit windows) only glows at night;
+    gta_emissive / gta_emissivestrong (signs, neon, traffic lights) always glow."""
+    s = shader.lower()
+    if "emissive" not in s:
+        return None
+    if "night" in s:
+        return True, 2.0
+    return False, 4.0 if "strong" in s else 1.5
+
+
+def surface_kind(shader):
+    """How a GTA IV shader should be drawn: 'decal' (blended onto the surface below:
+    road markings, grime, posters), 'glass' (see-through), 'masked' (hard cut-out:
+    fences, wires, foliage) or 'opaque'."""
+    s = shader.lower()
+    if "decal" in s:
+        return "decal"
+    if "glass" in s or "window" in s:
+        return "glass"
+    if any(k in s for k in ("alpha", "cutout", "billboard", "trees", "grass", "wire")):
+        return "masked"
+    return "opaque"
+
+
+SURFACE_PRIORITY = {"opaque": 0, "masked": 1, "glass": 2, "decal": 3}
+
+
+def load_distant_lights(game_dir):
+    """GTA IV's distant traffic lights (pc/data/paths/distantlights.dat).
+
+    Header: u32 point count, u32 group count, three 8x8 u32 grid tables; then int16 (x, y, z)
+    points in metres; then 12-byte groups (int16 centre x/y, u16 z, u16 radius, u16 first point,
+    u16 point count). Groups come in pairs: the two directions of one road.
+    Returns [(points, red)], each a polyline in driving order; red = tail lights."""
+    path = os.path.join(game_dir, "pc", "data", "paths", "distantlights.dat")
+    try:
+        d = open(path, "rb").read()
+    except OSError:
+        return []
+    n_pts, n_grp = struct.unpack_from("<II", d, 0)
+    p0 = 8 + 3 * 64 * 4
+    g0 = p0 + n_pts * 6
+    if g0 + n_grp * 12 > len(d):
+        return []
+    pts = [struct.unpack_from("<3h", d, p0 + 6 * i) for i in range(n_pts)]
+    out = []
+    for i in range(n_grp):
+        _cx, _cy, _cz, _r, first, count = struct.unpack_from("<hhHHHH", d, g0 + 12 * i)
+        if count >= 2 and first + count <= n_pts:
+            out.append(([tuple(float(c) for c in p) for p in pts[first:first + count]], i % 2 == 1))
     return out

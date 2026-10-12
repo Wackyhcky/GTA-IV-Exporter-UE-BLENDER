@@ -179,6 +179,46 @@ def default_output():
     return os.path.join(base, "GTA IV Blender", "liberty_city.blend")
 
 
+def bundled_traffic_plugin():
+    """The compiled GTAIVTraffic plugin shipped with the app (built for Unreal 5.8)."""
+    for rel in (("UnrealPlugin", "GTAIVTraffic"), ("UnrealPlugin", "GTAIVTraffic_Built")):
+        d = os.path.join(HERE, *rel)
+        if os.path.isfile(os.path.join(d, "GTAIVTraffic.uplugin")) and os.path.isdir(os.path.join(d, "Binaries")):
+            return d
+    return None
+
+
+def install_traffic_plugin(uproject, log):
+    """Copy the plugin into <project>/Plugins and enable it in the .uproject (backed up first)."""
+    src = bundled_traffic_plugin()
+    if src is None:
+        log("Traffic plugin not found next to the app; skipping traffic")
+        return False
+    dest = os.path.join(os.path.dirname(uproject), "Plugins", "GTAIVTraffic")
+    dll = os.path.join("Binaries", "Win64", "UnrealEditor-GTAIVTraffic.dll")
+    same = (os.path.isfile(os.path.join(dest, dll)) and
+            os.path.getsize(os.path.join(dest, dll)) == os.path.getsize(os.path.join(src, dll)) and
+            open(os.path.join(dest, dll), "rb").read() == open(os.path.join(src, dll), "rb").read())
+    if not same:
+        if os.path.isdir(dest):
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+        log("Installed the GTAIVTraffic plugin into %s" % os.path.dirname(dest))
+    proj = json.load(open(uproject, encoding="utf-8"))
+    plugins = proj.setdefault("Plugins", [])
+    entry = next((pl for pl in plugins if pl.get("Name") == "GTAIVTraffic"), None)
+    if entry is None or not entry.get("Enabled", False):
+        shutil.copy2(uproject, uproject + ".bak")
+        if entry is None:
+            plugins.append({"Name": "GTAIVTraffic", "Enabled": True})
+        else:
+            entry["Enabled"] = True
+        with open(uproject, "w", encoding="utf-8") as f:
+            json.dump(proj, f, indent="\t")
+        log("Enabled GTAIVTraffic in %s (backup: .uproject.bak)" % os.path.basename(uproject))
+    return True
+
+
 def load_settings():
     try:
         return json.load(open(SETTINGS_FILE, encoding="utf-8"))
@@ -224,6 +264,9 @@ class App(tk.Tk):
         self.textures = tk.BooleanVar(value=s.get("textures", True))
         self.normals = tk.BooleanVar(value=s.get("normals", True))
         self.interiors = tk.BooleanVar(value=s.get("interiors", True))
+        self.lights = tk.BooleanVar(value=s.get("lights", True))
+        self.traffic = tk.BooleanVar(value=s.get("traffic", True))
+        self.characters = tk.BooleanVar(value=s.get("characters", False))
         self.nanite = tk.BooleanVar(value=s.get("nanite", False))
         self.collision = tk.BooleanVar(value=s.get("collision", True))
         self.keep_files = tk.BooleanVar(value=s.get("keep_files", False))
@@ -312,6 +355,7 @@ class App(tk.Tk):
         self.detail_box.pack(side="left")
         ttk.Checkbutton(bar, text="Interiors", variable=self.interiors,
                         command=self._update_summary).pack(side="left", padx=(12, 0))
+        ttk.Checkbutton(bar, text="Lights", variable=self.lights).pack(side="left", padx=(8, 0))
         self.summary = ttk.Label(bar, text="")
         self.summary.pack(side="right")
 
@@ -353,6 +397,10 @@ class App(tk.Tk):
             row=0, column=2, sticky="w", padx=(24, 0))
         ttk.Checkbutton(self.unreal_opts, text="Keep intermediate files", variable=self.keep_files).grid(
             row=0, column=3, sticky="w", padx=(24, 0))
+        ttk.Checkbutton(self.unreal_opts, text="Traffic (GTA IV cars driving the roads)", variable=self.traffic).grid(
+            row=1, column=2, columnspan=2, sticky="w", padx=(24, 0))
+        ttk.Checkbutton(self.unreal_opts, text="Characters & weapons (345 peds, 79 weapons; walking NPCs in GASP projects)",
+                        variable=self.characters).grid(row=2, column=2, columnspan=2, sticky="w", padx=(24, 0))
 
         # run
         rf = ttk.Frame(root)
@@ -696,6 +744,7 @@ class App(tk.Tk):
             "lods": False,
             "detail": self.detail.get(),
             "interiors": self.interiors.get(),
+            "lights": self.lights.get(),
             "mode": self.mode.get(),
             "textures": self.textures.get(),
             "normals": self.normals.get(),
@@ -736,6 +785,8 @@ class App(tk.Tk):
                 self._convert_for_unreal(areas, export_dir)
                 if self.cancelled:
                     raise RuntimeError("cancelled")
+                if self.traffic.get() or self.characters.get():  # the plugin also runs the pedestrians
+                    install_traffic_plugin(self.uproject.get(), lambda m: self.q.put(("log", m)))
                 self._run_unreal_passes(project_dir, export_dir)
                 if not self.keep_files.get() and isinstance(self._result, int):
                     shutil.rmtree(export_dir, ignore_errors=True)
@@ -753,7 +804,8 @@ class App(tk.Tk):
         run with the same selection didn't finish, so a retry goes straight to importing."""
         from gta4_map_importer.unreal_export import UnrealExporter
         sig = {"areas": sorted(areas), "detail": self.detail.get(), "interiors": self.interiors.get(),
-               "textures": self.textures.get(), "v": 4}
+               "lights": self.lights.get(), "traffic": self.traffic.get(), "characters": self.characters.get(),
+               "textures": self.textures.get(), "v": 7}
         sig_path = os.path.join(export_dir, "selection.json")
         try:
             if (json.load(open(sig_path, encoding="utf-8")) == sig
@@ -767,7 +819,8 @@ class App(tk.Tk):
         n = UnrealExporter(self.game_dir.get(), export_dir, ",".join(areas), False,
                            self.textures.get(), key_cache=os.path.join(SETTINGS_DIR, "gta4_key.bin"),
                            log=lambda m: self.q.put(("log", m)), detail=self.detail.get(),
-                           interiors=self.interiors.get()).run(
+                           interiors=self.interiors.get(), lights=self.lights.get(),
+                           traffic=self.traffic.get(), characters=self.characters.get()).run(
             progress=lambda f: self.q.put(("progress", (UE_CONVERT_SHARE * f, "Converting models"))))
         with open(sig_path, "w", encoding="utf-8") as f:
             json.dump(sig, f)
@@ -788,7 +841,7 @@ class App(tk.Tk):
             pass_no += 1
             job = {"export_dir": export_dir, "mode": self.ue_mode.get(), "nanite": self.nanite.get(),
                    "collision": self.collision.get(), "map_name": self.map_name.get().strip(),
-                   "stage": "all", "first_pass": first, "max_batches": chunk}
+                   "stage": "all", "first_pass": first, "max_batches": chunk, "lights": self.lights.get()}
             with open(job_path, "w", encoding="utf-8") as f:
                 json.dump(job, f)
             log_path = os.path.join(export_dir, "unreal_pass_%02d.log" % pass_no)
@@ -920,7 +973,8 @@ class App(tk.Tk):
             "target": self.target.get(), "game_dir": self.game_dir.get(), "blender": self.blender.get(),
             "output": self.output.get(), "uproject": self.uproject.get(), "unreal": self.unreal.get(),
             "map_name": self.map_name.get(), "mode": self.mode.get(), "ue_mode": self.ue_mode.get(),
-            "detail": self.detail.get(), "interiors": self.interiors.get(),
+            "detail": self.detail.get(), "interiors": self.interiors.get(), "lights": self.lights.get(),
+            "traffic": self.traffic.get(), "characters": self.characters.get(),
             "textures": self.textures.get(), "normals": self.normals.get(),
             "nanite": self.nanite.get(), "collision": self.collision.get(), "keep_files": self.keep_files.get(),
             "areas": self._selected(),

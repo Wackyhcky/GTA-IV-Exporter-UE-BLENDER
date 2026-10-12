@@ -64,6 +64,8 @@ if bpy is not None:
             default="FULL")
         interiors: BoolProperty(name="Interiors", default=True,
                                 description="Building interiors and subway tunnels, in their own collections")
+        lights: BoolProperty(name="Lights", default=True,
+                             description="GTA's street, neon and window lights, one collection per district")
         textures: BoolProperty(name="Textures", default=True)
         normals: BoolProperty(name="Custom normals", default=True,
                               description="Use the game's vertex normals (slower import)")
@@ -93,7 +95,7 @@ if bpy is not None:
             try:
                 n = Importer(game_dir, cache, self.areas, False, self.mode, self.textures,
                              self.normals, self.quat_conjugate, detail=self.detail,
-                             interiors=self.interiors).run(
+                             interiors=self.interiors, lights=self.lights).run(
                     progress=lambda f: wm.progress_update(int(f * 100)))
             except Exception as e:
                 self.report({"ERROR"}, str(e))
@@ -105,7 +107,7 @@ if bpy is not None:
 
         def draw(self, context):
             col = self.layout.column()
-            for p in ("game_dir", "areas", "mode", "detail", "interiors", "textures", "normals", "cache_dir"):
+            for p in ("game_dir", "areas", "mode", "detail", "interiors", "lights", "textures", "normals", "cache_dir"):
                 col.prop(self, p)
 
     def _menu(self, context):

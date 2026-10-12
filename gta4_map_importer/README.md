@@ -40,4 +40,5 @@ to Mesh*, or import that area again in **Separate objects** mode.
 * `blender_import.py` builds meshes, materials and placements.
 
 ## Not included (yet)
-TLAD/TBoGT episode maps, GTA collision meshes, 2dfx lights, water, vehicles and peds.
+TLAD/TBoGT episode maps, GTA collision meshes, particle effects, water, vehicles and peds.
+(Lights, coronas, distant traffic and the day/night Blueprint are Unreal-side; Blender gets the lights and glow.)

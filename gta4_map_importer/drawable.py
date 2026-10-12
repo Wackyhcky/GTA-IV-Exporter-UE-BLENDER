@@ -52,6 +52,9 @@ class Mesh:
         self.face_mats = []    # list of (N,) material index arrays
         self.materials = []
         self.textures = {}     # embedded textures: name -> Texture
+        self.joints = []       # skinned meshes: (N,4) skeleton bone indices
+        self.weights = []      # skinned meshes: (N,4) weights summing to 1
+        self.skinned = False
         self._vbase = 0
 
     def finish(self):
@@ -63,6 +66,12 @@ class Mesh:
         self.colors = np.concatenate(self.colors)
         self.faces = np.concatenate(self.faces)
         self.face_mats = np.concatenate(self.face_mats)
+        if self.skinned and sum(len(j) for j in self.joints) == len(self.positions):
+            self.joints = np.concatenate(self.joints)
+            self.weights = np.concatenate(self.weights)
+        else:  # only some pieces were skinned: treat as a static mesh
+            self.skinned = False
+            self.joints, self.weights = [], []
         return True
 
 
@@ -191,6 +200,24 @@ def _read_geometry(res, g, mesh, mat_index):
         idx = idx[(idx < vcount).all(axis=1)]
     # drop degenerate triangles
     idx = idx[(idx[:, 0] != idx[:, 1]) & (idx[:, 1] != idx[:, 2]) & (idx[:, 0] != idx[:, 2])]
+
+    # skinning: 4 weights (bytes) + 4 indices into this geometry's bone table (+0x38, count +0x3E)
+    if 1 in layout and 2 in layout:
+        b = np.frombuffer(raw, np.uint8).reshape(vcount, stride)
+        wts = b[:, layout[1][0]:layout[1][0] + 4].astype(np.float32)
+        ixs = b[:, layout[2][0]:layout[2][0] + 4].astype(np.int32)
+        sums = wts.sum(1, keepdims=True)
+        wts = np.where(sums > 0, wts / np.maximum(sums, 1), np.array([1, 0, 0, 0], np.float32))
+        table_p, table_n = res.ptr(g + 0x38), res.u16(g + 0x3E)
+        if table_p is not None and table_n:
+            table = np.frombuffer(res.sys, "<u2", table_n, table_p).astype(np.int32)
+            ixs = table[np.clip(ixs, 0, table_n - 1)]
+        mesh.joints.append(ixs)
+        mesh.weights.append(wts)
+        mesh.skinned = True
+    elif mesh.skinned or mesh.joints:
+        mesh.joints.append(np.zeros((vcount, 4), np.int32))
+        mesh.weights.append(np.tile(np.array([1, 0, 0, 0], np.float32), (vcount, 1)))
 
     mesh.positions.append(pos)
     mesh.normals.append(nrm)

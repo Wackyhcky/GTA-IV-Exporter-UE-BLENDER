@@ -7,7 +7,7 @@ import time
 import bpy
 import numpy as np
 
-from .mapdata import GameData, model_size, select_detail, split_interiors
+from .mapdata import GameData, emissive_kind, surface_kind, model_size, placed_lights, select_detail, split_interiors
 
 ALPHA_SHADERS = ("alpha", "cutout", "decal", "glass", "window", "billboard", "trees", "grass", "wire")
 
@@ -18,13 +18,14 @@ def _log(msg):
 
 class Importer:
     def __init__(self, game_dir, cache_dir, areas="*", lods=False, mode="INSTANCES",
-                 textures=True, normals=True, quat_conjugate=True, key_cache=None, detail=None, interiors=True):
+                 textures=True, normals=True, quat_conjugate=True, key_cache=None, detail=None, interiors=True, lights=True):
         self.game_dir = game_dir
         self.cache_dir = cache_dir
         self.area_patterns = [a.strip().lower() for a in areas.replace(";", ",").split(",") if a.strip()] or ["*"]
         self.detail = detail or ("LOW" if lods else "FULL")
         self.mode = mode
         self.interiors = interiors
+        self.lights = lights
         self.textures = textures
         self.normals = normals
         self.quat_conjugate = quat_conjugate
@@ -75,8 +76,10 @@ class Importer:
     # ------------------------------------------------------------ materials
     def _material(self, m, mesh, txd):
         shader = m.shader.lower()
-        alpha = any(s in shader for s in ALPHA_SHADERS)
-        key = (m.diffuse, m.bump if self.textures else None, alpha)
+        kind = surface_kind(shader)
+        alpha = kind != "opaque"
+        emissive = emissive_kind(shader)
+        key = (m.diffuse, m.bump if self.textures else None, kind, emissive)
         mat = self._mat_cache.get(key)
         if mat is not None:
             return mat
@@ -93,12 +96,17 @@ class Importer:
             nt.links.new(tn.outputs["Color"], bsdf.inputs["Base Color"])
             if alpha:
                 nt.links.new(tn.outputs["Alpha"], bsdf.inputs["Alpha"])
-                for attr, val in (("surface_render_method", "DITHERED"), ("blend_method", "HASHED")):
+                # decals/glass: smooth alpha blending; cut-outs (fences, foliage): dithered
+                blended = kind in ("decal", "glass")
+                for attr, val in (("surface_render_method", "BLENDED" if blended else "DITHERED"),
+                                  ("blend_method", "BLEND" if blended else "HASHED")):
                     try:
                         setattr(mat, attr, val)
                     except Exception:
                         pass
             mat.diffuse_color = (0.8, 0.8, 0.8, 1)
+            if emissive is not None:
+                self._add_glow(mat, tn, bsdf, *emissive)
         bump = self._image(m.bump, mesh, txd)
         if bump is not None:
             bump.colorspace_settings.name = "Non-Color"
@@ -112,6 +120,26 @@ class Importer:
             nt.links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
         self._mat_cache[key] = mat
         return mat
+
+    @staticmethod
+    def _add_glow(mat, tex_node, bsdf, night_only, strength):
+        """Bulbs, windows, neon: the texture glows. Night-only glow follows the scene's
+        'gta4_night' property (1 = night, 0 = day; Scene Properties > Custom Properties)."""
+        color_in = bsdf.inputs.get("Emission Color") or bsdf.inputs.get("Emission")
+        str_in = bsdf.inputs.get("Emission Strength")
+        if color_in is None or str_in is None:
+            return
+        mat.node_tree.links.new(tex_node.outputs["Color"], color_in)
+        str_in.default_value = strength
+        if night_only:
+            d = str_in.driver_add("default_value").driver
+            d.type = "SCRIPTED"
+            var = d.variables.new()
+            var.name = "night"
+            var.targets[0].id_type = "SCENE"
+            var.targets[0].id = bpy.context.scene
+            var.targets[0].data_path = '["gta4_night"]'
+            d.expression = "night * %g" % strength
 
     # ------------------------------------------------------------ meshes
     def _build_mesh(self, mdef, mesh):
@@ -181,6 +209,8 @@ class Importer:
         _log("Detail level %s: %d candidate placements of %d models from %d areas"
              % (self.detail, sum(len(v) for v in selected.values()), len(hashes), len(selected)))
 
+        if "gta4_night" not in bpy.context.scene:
+            bpy.context.scene["gta4_night"] = 1.0  # glow of night-only bulbs/windows (0 = day)
         root = bpy.data.collections.new("GTA IV Map")
         bpy.context.scene.collection.children.link(root)
         lib = bpy.data.collections.new("GTA IV Models")
@@ -240,10 +270,47 @@ class Importer:
                     coll.objects.link(ob)
             if progress:
                 progress(0.8 + 0.2 * ai / len(selected))
+        if self.lights:
+            n = sum(self._area_lights(root, area, insts) for area, insts in sorted(selected.items()))
+            _log("Placed %d lights (toggle a '<district>_lights' collection to switch them)" % n)
         for a in gd.archives:
             a[1].close()
         _log("Done in %.0fs" % (time.time() - t0))
         return total
+
+    def _area_lights(self, root, area, insts):
+        """GTA's 2dfx lights as Blender point/spot lights, one collection per district."""
+        import math
+        from mathutils import Vector
+        lights = placed_lights(self.gd, insts)
+        if not lights:
+            return 0
+        coll = bpy.data.collections.new(area + "_lights")
+        root.children.link(coll)
+        shared = {}
+        for pos, d, L in lights:
+            key = (L.spot, L.color, round(L.range, 2), round(L.inner), round(L.outer))
+            data = shared.get(key)
+            if data is None:
+                data = bpy.data.lights.new("gta_light", "SPOT" if L.spot else "POINT")
+                data.color = tuple((c / 255.0) ** 2.2 for c in L.color)  # sRGB -> linear
+                data.energy = 3.0 * L.range * L.range  # watts; 20 m street lamp: 1200 W
+                data.shadow_soft_size = 0.05
+                data.use_shadow = False
+                if hasattr(data, "use_custom_distance"):
+                    data.use_custom_distance = True  # EEVEE: stop at GTA's range
+                    data.cutoff_distance = L.range
+                if L.spot:
+                    data.spot_size = math.radians(min(179.0, max(1.0, 2.0 * L.outer)))
+                    data.spot_blend = 1.0 - (L.inner / L.outer) if L.outer > 0 else 0.15
+                shared[key] = data
+            ob = bpy.data.objects.new("light", data)
+            ob.location = pos
+            if L.spot:
+                ob.rotation_mode = "QUATERNION"
+                ob.rotation_quaternion = Vector(d).to_track_quat("-Z", "Y")
+            coll.objects.link(ob)
+        return len(lights)
 
     def _quat(self, r):
         x, y, z, w = r
