@@ -14,6 +14,9 @@ GTA IV Map Exporter
 Keep the .exe next to the "_internal" folder.
 Blender: textures are saved in a "<name>_textures" folder beside the .blend; move them together.
 
+GTA IV Model Exporter
+===================
+
 Characters (Unreal, "Characters & weapons"): all GTA IV peds and Niko go to
 Content/GTAIV/Characters (one shared skeleton), weapons to Content/GTAIV/Meshes (SM_WPN_*).
 In a Game Animation Sample project you also get:
