@@ -155,4 +155,4 @@ don't redistribute the exported game assets.
 
 ## Author
 
-Made by **dessierror**.
+Made by **WackyHacky**.
