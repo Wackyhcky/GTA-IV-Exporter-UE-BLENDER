@@ -1,12 +1,12 @@
-"""Builds "GTA IV Map Exporter.exe" and the Blender add-on zip.
+"""Builds "GTA IV Exporter.exe" and the Blender add-on zip.
 
 Usage: double-click build_exe.bat (or run: python build_exe.py)
 
 Everything (virtual env, temp files, pip downloads) stays inside the .build
 folder next to this script, so your main Python install is not touched.
 Output:
-    dist/GTA IV Map Exporter/GTA IV Map Exporter.exe   (keep with its _internal folder)
-    dist/gta4_map_importer_addon.zip                   (Blender: Install from Disk)
+    dist/GTA IV Exporter/GTA IV Exporter.exe   (keep with its _internal folder)
+    dist/gtaiv_exporter_addon.zip                   (Blender: Install from Disk)
 """
 
 import os
@@ -20,8 +20,8 @@ SRC = os.path.dirname(os.path.abspath(__file__))
 BUILD = os.path.join(SRC, ".build")
 VENV = os.path.join(BUILD, "venv")
 DIST = os.path.join(SRC, "dist")
-APP = "GTA IV Map Exporter"
-PACKAGES = ["pyinstaller", "numpy", "pycryptodome"]
+APP = "GTA IV Exporter"
+PACKAGES = ["pyinstaller", "numpy", "pycryptodome", "sv-ttk"]  # sv-ttk: Windows 11 look for Tk
 
 
 def run(cmd, env):
@@ -41,12 +41,13 @@ def main():
         run([py, "-m", "pip", "install", "-q", "--upgrade", "pip"], env)
     run([py, "-m", "pip", "install", "-q"] + PACKAGES, env)
 
-    for d in (os.path.join(SRC, "gta4_map_importer", "__pycache__"),):
+    for d in (os.path.join(SRC, "gtaiv_exporter", "__pycache__"),):
         shutil.rmtree(d, ignore_errors=True)
     sep = os.pathsep  # ';' on Windows
     run([py, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--windowed",
          "--name", APP,
-         "--add-data", os.path.join(SRC, "gta4_map_importer") + sep + "gta4_map_importer",
+         "--collect-data", "sv_ttk",
+         "--add-data", os.path.join(SRC, "gtaiv_exporter") + sep + "gtaiv_exporter",
          "--add-data", os.path.join(SRC, "blender_runner.py") + sep + ".",
          "--add-data", os.path.join(SRC, "unreal_runner.py") + sep + ".",
          "--add-data", os.path.join(SRC, "unreal_lights.py") + sep + ".",
@@ -55,17 +56,17 @@ def main():
          "--distpath", DIST,
          "--workpath", os.path.join(BUILD, "work"),
          "--specpath", BUILD,
-         os.path.join(SRC, "gta4_map_gui.py")], env)
+         os.path.join(SRC, "gtaiv_exporter_gui.py")], env)
 
     shutil.copy(os.path.join(SRC, "app_README.txt"), os.path.join(DIST, APP, "README.txt"))
 
-    addon_zip = os.path.join(DIST, "gta4_map_importer_addon.zip")
-    pkg = os.path.join(SRC, "gta4_map_importer")
+    addon_zip = os.path.join(DIST, "gtaiv_exporter_addon.zip")
+    pkg = os.path.join(SRC, "gtaiv_exporter")
     with zipfile.ZipFile(addon_zip, "w", zipfile.ZIP_DEFLATED) as z:
         for f in sorted(os.listdir(pkg)):
             p = os.path.join(pkg, f)
             if os.path.isfile(p) and not f.endswith((".pyc", ".bin")):
-                z.write(p, "gta4_map_importer/" + f)
+                z.write(p, "gtaiv_exporter/" + f)
 
     shutil.rmtree(tmp, ignore_errors=True)
     print("\nDone:")

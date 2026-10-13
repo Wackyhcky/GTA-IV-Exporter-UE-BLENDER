@@ -2,7 +2,7 @@
     set GTA4_UE_JOB=job.json
     UnrealEditor-Cmd.exe <project> -run=pythonscript -script="unreal_runner.py"
 
-Imports what `gta4_map_importer.unreal_export` wrote: textures, master
+Imports what `gtaiv_exporter.unreal_export` wrote: textures, master
 materials + instances, static meshes, and a level with every placement.
 Reports to the GUI with log lines starting with '@@'.
 """

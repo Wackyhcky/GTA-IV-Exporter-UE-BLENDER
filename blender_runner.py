@@ -16,7 +16,7 @@ sys.path.insert(0, job["addon_dir"])
 
 import bpy  # noqa: E402
 
-from gta4_map_importer.blender_import import Importer  # noqa: E402
+from gtaiv_exporter.blender_import import Importer  # noqa: E402
 
 _last = [-1.0]
 

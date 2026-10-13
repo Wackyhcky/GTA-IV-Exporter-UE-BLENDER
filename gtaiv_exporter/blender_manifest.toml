@@ -1,0 +1,15 @@
+schema_version = "1.0.0"
+
+id = "gtaiv_exporter"
+version = "1.0.0"
+name = "GTA IV Exporter"
+tagline = "Import the GTA IV map straight from the game files"
+maintainer = "dessierror"
+type = "add-on"
+tags = ["Import-Export"]
+
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Reads GTA IV game archives and writes extracted textures"
